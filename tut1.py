@@ -7,6 +7,7 @@ from array import array
 import numpy as np
 from framework import createShader, createProgram
 import cyglfw3 as glfw
+from time import time
 
 # A 1-D array of 3 4-D vertices (X,Y,Z,W)
 # Note that this must be a numpy array, since as of 
