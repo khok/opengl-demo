@@ -13,9 +13,9 @@ from time import time, sleep
 # Note that this must be a numpy array, since as of 
 # 170111 support for lists has not been implemented.
 vertexPositions = np.array(
-    [0.75, 0.75, 0.0, 1.0,
-    0.75, -0.75, 0.0, 1.0, 
-    -0.75, -0.75, 0.0, 1.0],
+    [-1, -1, 0.0, 1.0,
+    0, 1, 0.0, 1.0, 
+    1, -1, 0.0, 1.0],
     dtype='float32'
 )
 
@@ -26,10 +26,12 @@ nVertices = 3
 strVertexShader = """
 #version 330
 
+uniform float myPos;
+
 layout(location = 0) in vec4 position;
 void main()
 {
-   gl_Position = position;
+   gl_Position = vec4(position.x * myPos, position.y * myPos, 0.0, 1.0);
 }
 """
 
@@ -37,10 +39,27 @@ void main()
 strFragmentShader = """
 #version 330
 
+uniform vec2 heartCenter;
+
 out vec4 outputColor;
+
+void drawHeart(float x, float y)
+{
+    float f = x*x + y*y - 2000;
+
+    float val = f*f*f - 40*x*x*y*y*y;
+
+   //float val = 10*x + 5 - y;
+
+    float res = float(val < 0);
+
+    outputColor = vec4(1.0f * res , 1.0f * (1 - res), 0.0f, 1.0f);    
+}
+
 void main()
 {
-   outputColor = vec4(1.0f, 1.0f, 1.0f, 1.0f);
+   vec2 pos = gl_FragCoord.xy - heartCenter;
+   drawHeart(pos.x, pos.y);
 }
 """
 
@@ -100,11 +119,34 @@ def init():
 # Called to update the display. 
 # Because we are using double-buffering, glutSwapBuffers is called at the end
 # to write the rendered buffer to the display.
-def display():
+
+anim = 0.0
+dirc = 1
+
+def display(window):
+    global anim, dirc
     glClearColor(0.0, 0.0, 0.0, 0.0)
     glClear(GL_COLOR_BUFFER_BIT)
     
     glUseProgram(theProgram)
+
+    unif = glGetUniformLocation(theProgram, 'myPos')
+    glUniform1f(unif, anim)
+
+    # glUniform1f(unif, anim)
+
+    x, y = glfw.GetFramebufferSize(window)
+
+    unif = glGetUniformLocation(theProgram, 'heartCenter')
+    glUniform2f(unif, x / 2, y / 2)
+
+    # anim += 0.1 * dirc
+
+    # if anim > 1 or anim < 0:
+        # dirc *= -1
+
+    anim = 1
+
     glBindVertexArray(vao)
 
     glEnableVertexAttribArray(0)
@@ -154,7 +196,7 @@ def main():
 
     while not glfw.WindowShouldClose(window):
         glfw.PollEvents();
-        display()
+        display(window)
         glfw.SwapBuffers(window);
 
         curTime = time()
