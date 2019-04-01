@@ -146,11 +146,25 @@ def main():
         print(e)
         exit(1)
 
+    prevTime = time()
+
+    timeSum = 0
+    count = 0
+
     while not glfw.WindowShouldClose(window):
         glfw.PollEvents();
         display()
         glfw.SwapBuffers(window);
 
+        curTime = time()
+
+        print(curTime - prevTime)
+        # count += 1
+        # timeSum += curTime - prevTime
+        prevTime = curTime
+
+
+    # print(count / timeSum)
     glfw.Terminate();
 
 if __name__ == '__main__':
