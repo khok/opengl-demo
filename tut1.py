@@ -7,7 +7,7 @@ from array import array
 import numpy as np
 from framework import createShader, createProgram
 import cyglfw3 as glfw
-from time import time
+from time import time, sleep
 
 # A 1-D array of 3 4-D vertices (X,Y,Z,W)
 # Note that this must be a numpy array, since as of 
@@ -159,10 +159,11 @@ def main():
 
         curTime = time()
 
-        print(curTime - prevTime)
+        # print(curTime - prevTime)
         # count += 1
         # timeSum += curTime - prevTime
         prevTime = curTime
+        sleep(0.016)
 
 
     # print(count / timeSum)
