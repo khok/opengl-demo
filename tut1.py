@@ -121,11 +121,7 @@ def keyboard(key, x, y):
         return
     
 # Called whenever the window's size changes (including once when the program starts)
-def onSize(win, width, height):
-        #print 'onsize: ', win, width, height
-        # self.width = width
-        # self.height = height
-        # self.aspect = width/float(height)
+def window_size_callback(window, width, height):
     glViewport(0, 0, width, height)
 
 # The main function
@@ -141,6 +137,8 @@ def main():
     window = glfw.CreateWindow(800, 600, "First App");
 
     glfw.MakeContextCurrent(window);
+
+    glfw.SetWindowSizeCallback(window, window_size_callback);
 
     try:
         init()
