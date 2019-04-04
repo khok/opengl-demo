@@ -9,13 +9,16 @@ from framework import createShader, createProgram
 import cyglfw3 as glfw
 from time import time, sleep
 
+from math import sin, cos, radians
+
+
 # A 1-D array of 3 4-D vertices (X,Y,Z,W)
 # Note that this must be a numpy array, since as of 
 # 170111 support for lists has not been implemented.
 vertexPositions = np.array(
-    [-1, -1, 0.0, 1.0,
-    0, 1, 0.0, 1.0, 
-    1, -1, 0.0, 1.0],
+    [cos(radians(-30)) * 0.5, sin(radians(-30)) * 0.5, 0.0, 1.0,
+    0, 0.5, 0.0, 1.0, 
+    cos(radians(210)) * 0.5, sin(radians(210)) * 0.5, 0.0, 1.0],
     dtype='float32'
 )
 
@@ -26,40 +29,192 @@ nVertices = 3
 strVertexShader = """
 #version 330
 
-uniform float myPos;
+uniform mat3 MVP;
 
 layout(location = 0) in vec4 position;
 void main()
 {
-   gl_Position = vec4(position.x * myPos, position.y * myPos, 0.0, 1.0);
+	vec3 pos = position.xyw * MVP;
+   gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+}
+"""
+
+strFragmentShaderOld = """
+#version 330
+
+out vec4 fragColor;
+
+void main(){
+	fragColor = vec4(1, 1, 1, 1);	
 }
 """
 
 # String containing fragment shader program written in GLSL
 strFragmentShader = """
 #version 330
+// Created by Sebastien Durand - 2014
+// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.
 
-uniform vec2 heartCenter;
+out vec4 fragColor;
 
-out vec4 outputColor;
+uniform float iTime;
+uniform vec2 iResolution;
+uniform vec2 iMouse;
 
-void drawHeart(float x, float y)
-{
-    float f = x*x + y*y - 2000;
+#define U(a,b) (a.x*b.y-b.x*a.y)
 
-    float val = f*f*f - 40*x*x*y*y*y;
+vec2 A[15];
+vec2 T1[5];
+vec2 T2[5];
 
-   //float val = 10*x + 5 - y;
+const vec3 L = normalize(vec3(1,.72, 1)), Y = vec3(0,1,0), E = Y*.01;
 
-    float res = float(val < 0);
+float tMorph;
+mat2 mat2Rot;
 
-    outputColor = vec4(1.0f * res , 1.0f * (1 - res), 0.0f, 1.0f);    
+// Distance to Bezier
+// inspired by [iq:https://www.shadertoy.com/view/ldj3Wh]
+// calculate distance to 2D bezier curve on xy but without forgeting the z component of p
+// total distance is corrected using pytagore just before return
+vec2 B(vec2 m, vec2 n, vec2 o, vec3 p) {
+	vec2 q = p.xy;
+	m-= q; n-= q; o-= q;
+	float x = U(m, o), y = 2. * U(n, m), z = 2. * U(o, n);
+	vec2 i = o - m, j = o - n, k = n - m, 
+		 s = 2. * (x * i + y * j + z * k), 
+		 r = m + (y * z - x * x) * vec2(s.y, -s.x) / dot(s, s);
+	float t = clamp((U(r, i) + 2. * U(k, r)) / (x + x + y + z), 0.,1.); // parametric position on curve
+	r = m + t * (k + k + t * (j - k)); // distance on 2D xy space
+	return vec2(sqrt(dot(r, r) + p.z * p.z), t); // distance on 3D space
 }
 
-void main()
-{
-   vec2 pos = gl_FragCoord.xy - heartCenter;
-   drawHeart(pos.x, pos.y);
+
+float smin(float a, float b, float k){
+    float h = clamp(.5+.5*(b-a)/k, 0., 1.);
+    return mix(b,a,h)-k*h*(1.-h);
+}
+
+// Distance to scene
+float M(vec3 p) {
+
+// Distance to Teapot --------------------------------------------------- 
+	// precalcul first part of teapot spout
+	vec2 h = B(T1[2],T1[3],T1[4], p);
+	float a = 99., 
+    // distance to teapot handle (-.06 => make the thickness) 
+		b = min(min(B(T2[0],T2[1],T2[2], p).x, B(T2[2],T2[3],T2[4], p).x) - .06, 
+    // max p.y-.9 => cut the end of the spout 
+                max(p.y - .9,
+    // distance to second part of teapot spout (abs(dist,r1)-dr) => enable to make the spout hole 
+                    min(abs(B(T1[0],T1[1],T1[2], p).x - .07) - .01, 
+    // distance to first part of teapot spout (tickness incrase with pos on curve) 
+                        h.x * (1. - .75 * h.y) - .08)));
+	
+    // distance to teapot body => use rotation symetry to simplify calculation to a distance to 2D bezier curve
+    vec3 qq= vec3(sqrt(dot(p,p)-p.y*p.y), p.y, 0);
+    // the substraction of .015 enable to generate a small thickness arround bezier to help convergance
+    // the .8 factor help convergance  
+	for(int i=0;i<13;i+=2) 
+		a = min(a, (B(A[i], A[i + 1], A[i + 2], qq).x - .015) * .7); 
+    // smooth minimum to improve quality at junction of handle and spout to the body
+	float dTeapot = smin(a,b,.02);
+
+// Distance to other shapes ---------------------------------------------
+	float dShape;
+	int idMorph = int(mod(floor(.5+(iTime)/(2.*3.141592658)),3.));
+	
+	if (idMorph == 1) {
+		p.xz *= mat2Rot;
+   	 	vec3 d = abs(p-vec3(.0,.5,0)) - vec3(.8,.7,.8);
+   		dShape = min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));
+	} else if (idMorph == 2) { 
+		p -= vec3(0,.55,0);
+		vec3 d1 = abs(p) - vec3(.67,.67,.67*1.618),
+		     d3 = abs(p) - vec3(.67*1.618,.67,.67);
+   		dShape = min(max(d1.x,max(d1.y,d1.z)),0.) + length(max(d1,0.));
+   		dShape = min(dShape,min(max(d3.x,max(d3.y,d3.z)),0.) + length(max(d3,0.)));
+	} else {
+		dShape = length(p-vec3(0,.45,0))-1.1;
+	}
+	
+	// !!! The morphing is here !!!
+    return mix(dTeapot, dShape, abs(tMorph));
+}
+
+// HSV to RGB conversion 
+// [iq: https://www.shadertoy.com/view/MsS3Wc]
+vec3 hsv2rgb_smooth(float x, float y, float z) {
+    vec3 rgb = clamp( abs(mod(x*6.+vec3(0.,4.,2.),6.)-3.)-1., 0., 1.);
+	rgb = rgb*rgb*(3.-2.*rgb); // cubic smoothing	
+	return z * mix( vec3(1), rgb, y);
+}
+
+vec3 normal(in vec3 p, in vec3 ray, in float t) {
+	float pitch = .4 * t / iResolution.x;
+    vec2 d = vec2(-1,1) * pitch;
+	vec3 p0 = p+d.xxx, p1 = p+d.xyy, p2 = p+d.yxy, p3 = p+d.yyx; // tetrahedral offsets
+	float f0 = M(p0), f1 = M(p1), f2 = M(p2), f3 = M(p3);
+	vec3 grad = p0*f0+p1*f1+p2*f2+p3*f3 - p*(f0+f1+f2+f3);
+	// prevent normals pointing away from camera (caused by precision errors)
+	return normalize(grad - max(.0,dot (grad,ray ))*ray);
+}
+
+
+void main() {
+	float aa=3.14159/4.;
+	mat2Rot = mat2(cos(aa),sin(aa),-sin(aa),cos(aa));
+	
+	// Morphing step
+	tMorph = cos(iTime*.5);
+	tMorph*=tMorph*tMorph*tMorph*tMorph;
+	
+	// Teapot body profil (8 quadratic curves) 
+	A[0]=vec2(0,0);A[1]=vec2(.64,0);A[2]=vec2(.64,.03);A[3]=vec2(.8,.12);A[4]=vec2(.8,.3);A[5]=vec2(.8,.48);A[6]=vec2(.64,.9);A[7]=vec2(.6,.93);
+    A[8]=vec2(.56,.9);A[9]=vec2(.56,.96);A[10]=vec2(.12,1.02);A[11]=vec2(0,1.05);A[12]=vec2(.16,1.14);A[13]=vec2(.2,1.2);A[14]=vec2(0,1.2);
+	// Teapot spout (2 quadratic curves)
+	T1[0]=vec2(1.16, .96);T1[1]=vec2(1.04, .9);T1[2]=vec2(1,.72);T1[3]=vec2(.92, .48);T1[4]=vec2(.72, .42);
+	// Teapot handle (2 quadratic curves)
+	T2[0]=vec2(-.6, .78);T2[1]=vec2(-1.16, .84);T2[2]=vec2(-1.16,.63);T2[3]=vec2(-1.2, .42);;T2[4]=vec2(-.72, .24);
+
+	// Configure camera
+	vec2 r = iResolution.xy, m = iMouse.xy / r,
+	     q = gl_FragCoord.xy/r.xy, p =q+q-1.;
+	p.x *= r.x/r.y;
+	float j=.0, s=1., h = .1, t=5.+.2*iTime + 4.*m.x;
+	vec3 o = 2.9*vec3(cos(t), .7- m.y,sin(t)),
+	     w = normalize(Y * .4 - o), u = normalize(cross(w, Y)), v = cross(u, w),
+         d = normalize(p.x * u + p.y * v + w+w), n, x;
+			
+	// Ray marching
+	t=0.;
+    for(int i=0;i<48;i++) { 
+		if (h<.0001 || t>4.7) break;
+        t += h = M(o + d*t);
+    }
+    
+	// Background colour change as teapot complementaries colours (using HSV)
+	vec3 c = mix(hsv2rgb_smooth( .5+iTime*.02,.35,.4), 
+			 	 hsv2rgb_smooth(-.5+iTime*.02,.35,.7), q.y);
+		
+    // Calculate color on point
+	if (h < .001) {
+		x = o + t * d;
+		n = normal(x,d,t);//normalize(vec3(M(x+E.yxx)-M(x-E.yxx),M(x+E)-M(x-E),M(x+E.xxy)-M(x-E.xxy)));
+		// Calculate Shadows
+		for(int i=0;i<20;i++){
+			j += .02;
+			s = min(s, M(x+L*j)/j);
+		}
+		// Teapot color rotation in HSV color space
+		vec3 c1 = hsv2rgb_smooth(.9+iTime*.02, 1.,1.); 
+		// Shading
+	    c = mix(c,mix(sqrt((clamp(3.*s,0.,1.)+.3)*c1),
+			          vec3(pow(max(dot(reflect(L,n),d),0.),99.)),.4),2.*dot(n,-d));
+	} 
+
+	c *= pow(16.*q.x*q.y*(1.-q.x)*(1.-q.y), .16); // Vigneting
+	fragColor=vec4(c,1);
+	
 }
 """
 
@@ -111,41 +266,63 @@ def initializeVertexArray(vbo):
 
 
 # Initialize the OpenGL environment
-def init():
+def initOpenGL():
     global vao
     initializeProgram()
     vao = initializeVertexArray(initializeVertexBuffer())
 
-# Called to update the display. 
-# Because we are using double-buffering, glutSwapBuffers is called at the end
-# to write the rendered buffer to the display.
+angle = 0
 
-anim = 0.0
-dirc = 1
+start_time = time()
 
 def display(window):
-    global anim, dirc
     glClearColor(0.0, 0.0, 0.0, 0.0)
     glClear(GL_COLOR_BUFFER_BIT)
     
     glUseProgram(theProgram)
 
-    unif = glGetUniformLocation(theProgram, 'myPos')
-    glUniform1f(unif, anim)
+    # unif = glGetUniformLocation(theProgram, 'myPos')
+    # glUniform1f(unif, anim)
 
     # glUniform1f(unif, anim)
 
-    x, y = glfw.GetFramebufferSize(window)
-
-    unif = glGetUniformLocation(theProgram, 'heartCenter')
-    glUniform2f(unif, x / 2, y / 2)
+    # unif = glGetUniformLocation(theProgram, 'heartCenter')
+    # glUniform2f(unif, x / 2, y / 2)
 
     # anim += 0.1 * dirc
 
     # if anim > 1 or anim < 0:
         # dirc *= -1
 
-    anim = 1
+    unif = glGetUniformLocation(theProgram, 'iTime')
+    glUniform1f(unif, time() - start_time)
+
+    unif = glGetUniformLocation(theProgram, 'iResolution')
+    x, y = glfw.GetFramebufferSize(window)
+    glUniform2f(unif, x, y)
+
+    unif = glGetUniformLocation(theProgram, 'iMouse')
+    glUniform2f(unif, 10, 10)
+
+    unif = glGetUniformLocation(theProgram, 'MVP')
+
+    global angle
+    cosA = cos(angle)
+    sinA = sin(angle)
+
+    # angle += 0.05
+
+    glUniformMatrix3fv(unif, 1, GL_TRUE, np.array(
+    	[cosA * 2, sinA, 0,
+    	-sinA, cosA * 2, 0, 
+    	0,     0,    1], dtype='float32'))
+
+
+    # uniform float iTime;
+	# uniform vec2 iResolution;
+	# uniform vec2 iMouse;
+
+    # anim = 1
 
     glBindVertexArray(vao)
 
@@ -153,63 +330,67 @@ def display(window):
     glDrawArrays(GL_TRIANGLES, 0, nVertices)
     glDisableVertexAttribArray(0)
 
-    glUseProgram(0)
     glBindVertexArray(0)
+    glUseProgram(0)
 
 
 # keyboard input handler: exits the program if 'esc' is pressed
-def keyboard(key, x, y):
-    if ord(key) == 27: # ord() is needed to get the keycode
-        glutLeaveMainLoop()
-        return
-    
+def key_callback(window, key, scancode, action, mods):
+    if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
+        glfw.SetWindowShouldClose(window, True)
+
 # Called whenever the window's size changes (including once when the program starts)
-def window_size_callback(window, width, height):
+def window_size_callback(window, w, h):
+    width, height = glfw.GetFramebufferSize(window)
     glViewport(0, 0, width, height)
 
-# The main function
+
 def main():
+    appName = 'First App'
 
     glfw.Init()
-    # version hints
     glfw.WindowHint(glfw.CONTEXT_VERSION_MAJOR, 3)
     glfw.WindowHint(glfw.CONTEXT_VERSION_MINOR, 3)
-    glfw.WindowHint(glfw.OPENGL_FORWARD_COMPAT, GL_TRUE)
-    glfw.WindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+    # glfw.WindowHint(glfw.OPENGL_FORWARD_COMPAT, GL_TRUE)
+    # glfw.WindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
 
-    window = glfw.CreateWindow(800, 600, "First App");
-
-    glfw.MakeContextCurrent(window);
-
-    glfw.SetWindowSizeCallback(window, window_size_callback);
+    window = glfw.CreateWindow(800, 800, appName)
+    glfw.SetWindowSizeCallback(window, window_size_callback)
+    glfw.SetKeyCallback(window, key_callback)
+    glfw.MakeContextCurrent(window)
+    glfw.SwapInterval(1)
 
     try:
-        init()
+        initOpenGL()
     except Exception as e:
         print(e)
         exit(1)
 
     prevTime = time()
-
-    timeSum = 0
-    count = 0
-
+    frameCount = 0
+    frameTimeSum = 0
+    lastUpdateTime = prevTime
     while not glfw.WindowShouldClose(window):
-        glfw.PollEvents();
+        glfw.PollEvents()
         display(window)
-        glfw.SwapBuffers(window);
-
+        glfw.SwapBuffers(window)
         curTime = time()
-
-        # print(curTime - prevTime)
-        # count += 1
-        # timeSum += curTime - prevTime
-        prevTime = curTime
+        frameTime = (curTime - prevTime)
+        # if frameTime != 0: print(1 / frameTime)
         sleep(0.016)
 
+        if curTime - lastUpdateTime > 1:
+        	glfw.SetWindowTitle(window, '%s, FPS: %s' % (appName, str(round(frameCount / frameTimeSum))))
+        	frameCount = 0
+        	frameTimeSum = 0
+        	lastUpdateTime = curTime
 
-    # print(count / timeSum)
-    glfw.Terminate();
+        frameTimeSum += frameTime
+        frameCount += 1
+        prevTime = curTime
+
+    glfw.DestroyWindow(window)
+    glfw.Terminate()
 
 if __name__ == '__main__':
     main()
